@@ -10,7 +10,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/mlafeldt/pkgcloud/upload"
+	"github.com/marcov/pkgcloud/upload"
 )
 
 //go:generate bash -c "./gendistros.py supportedDistros | gofmt > distros.go"
