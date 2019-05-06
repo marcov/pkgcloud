@@ -8,9 +8,13 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"regexp"
 	"strconv"
 
 	"github.com/marcov/pkgcloud/upload"
+	"github.com/peterhellberg/link"
+	"github.com/sirupsen/logrus"
+	pb "gopkg.in/cheggaaa/pb.v1"
 )
 
 //go:generate bash -c "./gendistros.py supportedDistros | gofmt > distros.go"
@@ -107,25 +111,62 @@ type Package struct {
 
 // All list all packages in repository
 func (c Client) All(repo string) ([]Package, error) {
+	var allPackages []Package
 	endpoint := fmt.Sprintf("%s/repos/%s/packages.json", ServiceURL, repo)
-	req, err := http.NewRequest("GET", endpoint, nil)
-	if err != nil {
-		return nil, err
+
+	progressBar := pb.New(0)
+	progressBar.SetMaxWidth(100)
+	progressBar.Start()
+	defer progressBar.Finish()
+
+	for {
+		req, err := http.NewRequest("GET", endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		req.SetBasicAuth(c.token, "")
+		req.Header.Add("User-Agent", UserAgent)
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		progressBar.Increment()
+
+		var pagePkgs []Package
+		err = decodeResponse(resp, &pagePkgs)
+		if err != nil {
+			return allPackages, err
+		}
+		allPackages = append(allPackages, pagePkgs...)
+
+		// API are paginated, with next page in the response header, as "Link"
+		// element
+		group := link.ParseResponse(resp)
+
+		if next, found := group["next"]; found {
+			endpoint = next.URI
+		} else {
+			break
+		}
+		logrus.Debugf(`Found next page in Header/Link: %s`, endpoint)
+
+		if progressBar.Total == 0 {
+			if last, found := group["last"]; found {
+				re := regexp.MustCompile(`page=(\d+)$`)
+				total, err := strconv.Atoi(re.FindStringSubmatch(last.URI)[1])
+				if err == nil {
+					progressBar.SetTotal(total)
+				}
+			}
+		}
 	}
 
-	req.SetBasicAuth(c.token, "")
-	req.Header.Add("User-Agent", UserAgent)
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	var packages []Package
-	err = decodeResponse(resp, &packages)
-	return packages, err
+	return allPackages, nil
 }
 
 // Destroy removes package from repository.
